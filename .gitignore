@@ -1,0 +1,62 @@
+# =========================
+# Python environment
+# =========================
+testenv/
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# Logs & outputs
+# =========================
+*.log
+output/
+outputs/
+data/
+*.csv
+*.json
+
+# =========================
+# Selenium / browser data
+# =========================
+chromedriver*
+geckodriver*
+driver.log
+
+# Browser profiles
+user-data-dir/
+profile/
+profiles/
+session/
+sessions/
+
+# Chrome/Edge automation artifacts
+DevToolsActivePort
+chrome_debug.log
+
+# =========================
+# IDE / editor files
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
