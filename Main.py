@@ -62,9 +62,10 @@ def scrapeOCTranspo(start: str, destination: str) -> int:
 
 def select_suggestion_waze(query: str, txtPlaceholder: str):
     loc_input = WebDriverWait(driver, 100).until(EC.presence_of_element_located((By.XPATH, f"//input[@placeholder='{txtPlaceholder}']")))
-    loc_input.send_keys(query)
 
-    time.sleep(5)
+    remove_tooltips()
+
+    loc_input.send_keys(query)
 
     suggestions_element = driver.find_elements(By.CSS_SELECTOR, "#search-suggestions > div")
     suggestions = []
@@ -89,6 +90,12 @@ def select_suggestion_waze(query: str, txtPlaceholder: str):
             if descendant.get_attribute("class") == "wm-search-item":
                 descendant.click()
                 break
+
+def remove_tooltips():
+    time.sleep(5)
+    tooltip_buttons = driver.find_elements(By.CSS_SELECTOR, "[class*='waze-tooltip'] button")
+    for button in tooltip_buttons:
+        button.click();
 
 def select_suggestion_oc(query: str, inputID: str):
     loc_input = WebDriverWait(driver, 100).until(EC.presence_of_element_located((By.CSS_SELECTOR, f"#{inputID} input")))
