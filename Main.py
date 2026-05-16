@@ -1,116 +1,196 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.chrome.options import Options
+import tempfile
 import time
 import re
 
-"""
-chrome_options = Options()
-chrome_options.add_argument("--headless=new")
-chrome_options.add_argument("--window-position=-2400,-2400")
-"""
-
-driver = webdriver.Chrome()
+driver = None
 trafficRanks = {"Low Traffic": [1, 25], "Moderate Traffic": [26, 75], "Heavy Traffic": [76, 150]}
 
-def scrapeWaze(start: str, destination: str) -> list:
-    driver.get("https://www.waze.com/live-map")
 
-    while select_suggestion_waze(start, "Choose starting point") == 0 or select_suggestion_waze(destination, "Choose destination") == 0:
+def scrapeWaze(start: str, destination: str) -> list:
+    global driver
+
+    while True:
+        if driver:
+            driver.quit()
+
+        options = Options()
+        options.add_argument(f"--user-data-dir={tempfile.mkdtemp()}")
+
+        driver = webdriver.Chrome(options=options)
         driver.get("https://www.waze.com/live-map")
 
-    bestRoute = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, '.wm-routes-item-desktop.is-active'))).text.split("\n")[1]
-    distance = float(WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, '.wm-routes-item-desktop__footer'))).text.split()[0])
-        
+        ok1 = select_suggestion_waze(start, "Choose starting point")
+        ok2 = select_suggestion_waze(destination, "Choose destination")
+
+        if ok1 != 0 and ok2 != 0:
+            break
+
+    remove_tooltips()
+    bestRoute = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, ".wm-routes-item-desktop.is-active"))
+    ).get_attribute("textContent").split(" ")[0] + " minArrive"
+
+    distance = float(WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, ".wm-routes-item-desktop__footer"))
+    ).get_attribute("textContent").split()[0])
+
     return [bestRoute, distance]
+
 
 def scrapeOCTranspo(start: str, destination: str) -> int:
     driver.get("https://plan.octranspo.com/plan")
+
     select_suggestion_oc(start, "gh-StartLocationInput")
     select_suggestion_oc(destination, "gh-EndLocationInput")
 
-    disableButton = driver.find_element(By.ID, "ServiceModeTrainBtn")
-    disableButton.click()
+    driver.find_element(By.ID, "ServiceModeTrainBtn").click()
+    driver.find_element(By.CSS_SELECTOR, ".gh-RequestButton.gh-TravelPlansRequestButton").click()
 
-    submitButton = driver.find_element(By.CSS_SELECTOR, ".gh-RequestButton.gh-TravelPlansRequestButton")
-    submitButton.click()
+    WebDriverWait(driver, 20).until(
+        lambda d: (
+            el := d.find_elements(By.CSS_SELECTOR, ".TravelPlanDuration")
+        ) and el[0].get_attribute("textContent").strip() != " "
+    )
 
-    totalTimeElement = WebDriverWait(driver, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, ".TravelPlanDuration"))
-    WebDriverWait(driver, 10).until(lambda d: totalTimeElement.text.strip() != "")
-    totalTime = int(re.findall(r'\d+', totalTimeElement.text)[0])
+    totalTime = int(re.findall(
+        r"\d+", driver.find_element(By.CSS_SELECTOR, ".TravelPlanDuration").get_attribute("textContent")
+    )[0])
 
-    walkingTimeElement = WebDriverWait(driver, 10).until(lambda d: d.find_element(By.CSS_SELECTOR, ".TravelPlanWalkingDuration"))
-    WebDriverWait(driver, 10).until(lambda d: walkingTimeElement.text.strip() != "")
-    walkingTime = int(re.findall(r'\d+', walkingTimeElement.text)[0])
+    walkingTime = int(re.findall(
+        r"\d+", driver.find_element(By.CSS_SELECTOR, ".TravelPlanWalkingDuration").get_attribute("textContent")
+    )[0])
 
-    drivingTime = totalTime - walkingTime
+    return totalTime - walkingTime
 
-    return drivingTime
 
 def select_suggestion_waze(query: str, txtPlaceholder: str):
-    loc_input = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, f"//input[@placeholder='{txtPlaceholder}']")))
+    loc_input = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.XPATH, f"//input[@placeholder='{txtPlaceholder}']"))
+    )
 
     remove_tooltips()
+
+    loc_input.clear()
     loc_input.send_keys(query)
 
-    suggestions = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".wm-search-item")))
+    time.sleep(1)
+
+    suggestions = driver.find_elements(By.CSS_SELECTOR, ".wm-search-item")
 
     retries = 0
-    while retries < 5:
-        suggestions = driver.find_elements(By.CSS_SELECTOR, ".wm-search-item")
-        if any(item.text == "Sign in to see your saved places" for item in suggestions):
+    while retries < 3:
+        if any("Sign in to see your saved places" in s.get_attribute("textContent") for s in suggestions):
+            time.sleep(0.5)
+            suggestions = driver.find_elements(By.CSS_SELECTOR, ".wm-search-item")
             retries += 1
-            time.sleep(2)
             continue
-
         break
 
-    if len(suggestions) <= 1:
+    if len(suggestions) < 2:
         return 0
 
-    driver.execute_script("arguments[0].click();", suggestions[1])
-
-    old = {m.text for m in driver.find_elements(By.CSS_SELECTOR, ".wm-marker-label__text") if m.text.strip()}
     try:
-        new_marker_texts = WebDriverWait(driver, 100).until(lambda d: [m.text for m in d.find_elements(By.CSS_SELECTOR, ".wm-marker-label__text") if m.text.strip() and m.text not in old] or False)
-        if not any(query in t for t in new_marker_texts):
+        time.sleep(0.5) 
+
+        suggestions = driver.find_elements(By.CSS_SELECTOR, ".wm-search-item")
+        el = suggestions[1]
+
+        driver.execute_script("arguments[0].scrollIntoView(true);", el)
+        time.sleep(0.2)
+
+        driver.execute_script("arguments[0].click();", el) 
+
+    except:
+        return 0
+
+    old = {
+        m.get_attribute("textContent") for m in driver.find_elements(By.CSS_SELECTOR, ".wm-marker-label__text")
+        if m.get_attribute("textContent").strip()
+    }
+
+    try:
+        new_marker_texts = WebDriverWait(driver, 10).until(
+            lambda d: [
+                m.get_attribute("textContent") for m in d.find_elements(By.CSS_SELECTOR, ".wm-marker-label__text")
+                if m.get_attribute("textContent").strip() and m.get_attribute("textContent") not in old
+            ] or False
+        )
+
+        if not any(query.lower() in t.lower() for t in new_marker_texts):
             return 0
-    except TimeoutException:
+
+    except:
         return 0
 
     return 1
 
+
 def remove_tooltips():
-    time.sleep(3)
-    tooltip_buttons = driver.find_elements(By.CSS_SELECTOR, "[class*='waze-tooltip'] button")
-    for button in tooltip_buttons:
-        button.click();
+    time.sleep(1)
+    for button in driver.find_elements(By.CSS_SELECTOR, "[class*='waze-tooltip'] button"):
+        try:
+            button.click()
+        except:
+            pass
+
 
 def select_suggestion_oc(query: str, inputID: str):
-    loc_input = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, f"#{inputID} input")))
+    loc_input = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, f"#{inputID} input"))
+    )
+
+    loc_input.clear()
     loc_input.send_keys(query)
 
-    loc_input = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, inputID)))
+    time.sleep(1)
 
-    suggestion = WebDriverWait(loc_input, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".ui-menu-item.gh-Suggestion")))
-    suggestion.click()
+    suggestions = WebDriverWait(driver, 10).until(
+        lambda d: d.find_elements(By.CSS_SELECTOR, ".ui-menu-item.gh-Suggestion")
+    )
+
+    if not suggestions:
+        return
+
+    suggestions = driver.find_elements(By.CSS_SELECTOR, ".ui-menu-item.gh-Suggestion")
+
+    driver.execute_script("arguments[0].scrollIntoView(true);", suggestions[0])
+    time.sleep(0.2)
+
+    driver.execute_script("arguments[0].click();", suggestions[0])
+    time.sleep(1)
+
+    reconfirm = driver.find_elements(By.CSS_SELECTOR, ".DidYouMeanSuggestion")
+
+    if reconfirm:
+        driver.execute_script("arguments[0].click();", reconfirm[0])
+
+
 
 def planTrip(start: str, destination: str) -> dict:
     trafficInfo = scrapeWaze(start, destination)
     transitTime = scrapeOCTranspo(start, destination)
 
-    idealTime = round(trafficInfo[1] / (50/60), 2)
-    percentage = round(((transitTime - idealTime) / idealTime) * 10, 2)
+    carTime = int(re.findall(r"\d+", trafficInfo[0])[0])
+    percentage = 0 if carTime == 0 else round(((transitTime - carTime) / carTime) * 100, 2)
+
     trafficStatus = "Severe Traffic"
     for rank in trafficRanks:
         if trafficRanks[rank][0] <= percentage <= trafficRanks[rank][1]:
             trafficStatus = rank
             break
-    
-    newDictionary = {"Best Route Info": trafficInfo[0], "Best Route Distance": trafficInfo[1] * 1.609, "OC Transpo Time": transitTime, "Traffic Status": trafficStatus}
-    return newDictionary
 
-print(planTrip("Parliament", "Billings Bridge"))
+    return {
+        "Best Route Info": trafficInfo[0],
+        "Best Route Distance (km)": round(trafficInfo[1], 2),
+        "OC Transpo Time": transitTime,
+        "Traffic Status": trafficStatus
+    }
+
+
+print(planTrip("", "")) # Enter your from and to locations here respectively  
